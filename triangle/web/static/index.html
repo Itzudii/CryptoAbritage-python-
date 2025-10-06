@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Triangular Arbitrage Bot Dashboard</title>
+  <style>
+    :root { color-scheme: dark light; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Fira Sans", "Droid Sans", Helvetica, Arial, sans-serif; margin: 0; background: #0b1220; color: #e8ecf1; }
+    header { padding: 16px 24px; background: #111a2b; border-bottom: 1px solid #243049; display: flex; align-items: center; justify-content: space-between; }
+    h1 { margin: 0; font-size: 18px; }
+    main { padding: 20px; display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+    .card { background: #0e1726; border: 1px solid #243049; border-radius: 10px; padding: 16px; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+    button { background: #2f5aff; color: white; border: none; padding: 10px 14px; border-radius: 8px; cursor: pointer; }
+    button.secondary { background: #25324a; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { padding: 8px; border-bottom: 1px solid #1e2a44; text-align: left; }
+    th { color: #9fb0d9; font-weight: 600; }
+    .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; }
+    .ok { background: #123f28; color: #8fe1b7; }
+    .warn { background: #3f2b12; color: #f0c27b; }
+    .bad { background: #3f1212; color: #f08a8a; }
+    footer { padding: 12px 20px; text-align: center; color: #91a2c7; border-top: 1px solid #243049; }
+    small.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; color: #9fb0d9; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🔺 Triangular Arbitrage Bot</h1>
+    <div class="row">
+      <button id="startBtn">Start (Dry Run)</button>
+      <button id="stopBtn" class="secondary">Stop</button>
+      <button id="scanBtn" class="secondary">On-demand Scan</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="card">
+      <h3>Status</h3>
+      <div id="status">
+        <div>Mode: <span id="mode" class="pill warn">UNKNOWN</span></div>
+        <div>Running: <span id="running" class="pill bad">false</span></div>
+        <div>Iterations: <span id="iterations">0</span></div>
+        <div>Opportunities Found: <span id="oppsFound">0</span></div>
+        <div>Trades Executed: <span id="tradesExec">0</span></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h3>Wallet</h3>
+      <div class="row">
+        <div>Total Portfolio (USDT): <strong id="totalUSDT">0.00</strong></div>
+        <div style="margin-left:12px;">Total Profit (USDT): <strong id="totalProfit">0.00</strong></div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Asset</th>
+            <th>Free</th>
+            <th>Locked</th>
+            <th>Value (USDT)</th>
+          </tr>
+        </thead>
+        <tbody id="walletBody"></tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h3>Live Opportunities</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Path</th>
+            <th>Profit</th>
+            <th>Profit %</th>
+          </tr>
+        </thead>
+        <tbody id="oppsBody"></tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h3>Recent Trades</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Path</th>
+            <th>Profit</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="tradesBody"></tbody>
+      </table>
+    </section>
+  </main>
+
+  <footer>
+    <small class="mono">API: /api/* — WebSocket: /ws/live</small>
+  </footer>
+
+  <script src="/ui/app.js"></script>
+</body>
+</html>
