@@ -63,17 +63,38 @@ class MarketData:
         asyncio.run(self._ws_loop())
 
     async def _ws_loop(self):
-        # Build endpoint for all book tickers: stream name is !bookTicker
+        # Build candidate endpoints for all book tickers: stream name is !bookTicker
+        # Different deployments may only support one of these patterns.
         ws_base = Config.BINANCE_WS_TESTNET if Config.USE_TESTNET else Config.BINANCE_WS_MAINNET
-        # Use combined stream path when available
-        # Binance supports endpoint: wss://stream.binance.com:9443/ws/!bookTicker
-        # Testnet follows the same pattern
+        bases = []
         if ws_base.endswith("/ws"):
-            url = f"{ws_base}/!bookTicker"
+            bases = [ws_base, ws_base.rsplit("/ws", 1)[0]]  # e.g., .../ws and ...
         else:
-            url = f"{ws_base}/ws/!bookTicker"
+            bases = [ws_base, f"{ws_base}/ws"]
 
+        candidates = []
+        for b in bases:
+            # Standard combined stream path
+            candidates.append(f"{b}/!bookTicker")
+            # Query-style combined stream path
+            candidates.append(f"{b}/stream?streams=!bookTicker")
+
+        # Deduplicate while preserving order
+        seen = set()
+        url_candidates = []
+        for u in candidates:
+            if u not in seen:
+                seen.add(u)
+                url_candidates.append(u)
+
+        idx = 0
         while self._running:
+            url = url_candidates[idx % len(url_candidates)] if url_candidates else None
+            idx += 1
+            if not url:
+                logger.warning("No WebSocket URL candidates available; disabling WS feed")
+                self._running = False
+                break
             try:
                 async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
                     logger.info(f"Connected to Binance WS: {url}")
@@ -107,7 +128,7 @@ class MarketData:
                                 import time as _t
                                 self._last_msg_ts = _t.time()
             except Exception as e:
-                logger.warning(f"WebSocket error: {e}. Reconnecting in 2s...")
+                logger.warning(f"WebSocket error on {url}: {e}. Trying next endpoint in 2s...")
                 self._reconnects += 1
                 await asyncio.sleep(2)
 

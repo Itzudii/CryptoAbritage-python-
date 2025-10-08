@@ -95,72 +95,67 @@ class ArbitrageCalculator:
         steps = []
         amount = initial_amount
         
-        # Step 1: First conversion
+        # Helper for a single step given current and next asset and a pair
+        def _apply_step(curr_asset: str, next_asset: str, pair: str, price: float, amt_in: float):
+            # Pair format is BASEQUOTE (e.g., ETHBTC means 1 ETH costs <price> BTC)
+            base = pair[:-len(next_asset)] if pair.endswith(next_asset) else pair[:len(next_asset)]
+            quote = pair[len(base):]
+            # Validate mapping
+            if base + quote != pair:
+                return {'error': f'Invalid pair parsing for {pair}'}, None
+            if {curr_asset, next_asset} != {base, quote}:
+                return {'error': f'Pair {pair} does not match assets {curr_asset}->{next_asset}'}, None
+            # If we hold BASE and want QUOTE, we SELL BASE for QUOTE: QUOTE = BASE * price
+            if curr_asset == base and next_asset == quote:
+                amt_out = amt_in * price
+                direction = 'SELL'
+            # If we hold QUOTE and want BASE, we BUY BASE with QUOTE: BASE = QUOTE / price
+            elif curr_asset == quote and next_asset == base:
+                # Guard divide by zero
+                if not price:
+                    return {'error': f'Zero price for {pair}'}, None
+                amt_out = amt_in / price
+                direction = 'BUY'
+            else:
+                return {'error': f'Unsupported direction for {pair} {curr_asset}->{next_asset}'}, None
+            amt_after_fee = amt_out * (1 - self.taker_fee)
+            step = {
+                'pair': pair,
+                'direction': direction,
+                'price': price,
+                'amount_before': amt_in,
+                'amount_after': amt_after_fee,
+                'fee': abs(amt_out - amt_after_fee),
+            }
+            return None, step
+
+        # Step 1
         pair1 = pairs[0]
         price1 = prices[pair1]
-        
-        # Determine if buying or selling
-        if pair1.endswith(path[0]):
-            # Buying quote with base (e.g., BTCUSDT - buying BTC with USDT)
-            amount1 = amount / price1
-            direction1 = 'BUY'
-        else:
-            # Selling base for quote (e.g., USDTBTC - selling USDT for BTC)
-            amount1 = amount * price1
-            direction1 = 'SELL'
-        
-        amount1_after_fee = amount1 * (1 - self.taker_fee)
-        steps.append({
-            'pair': pair1,
-            'direction': direction1,
-            'price': price1,
-            'amount_before': amount,
-            'amount_after': amount1_after_fee,
-            'fee': amount1 * self.taker_fee
-        })
-        
-        # Step 2: Second conversion
+        err, s1 = _apply_step(path[0], path[1], pair1, price1, amount)
+        if err:
+            return err
+        steps.append(s1)
+        amount1_after_fee = s1['amount_after']
+
+        # Step 2
         pair2 = pairs[1]
         price2 = prices[pair2]
-        
-        if pair2.endswith(path[1]):
-            amount2 = amount1_after_fee / price2
-            direction2 = 'BUY'
-        else:
-            amount2 = amount1_after_fee * price2
-            direction2 = 'SELL'
-        
-        amount2_after_fee = amount2 * (1 - self.taker_fee)
-        steps.append({
-            'pair': pair2,
-            'direction': direction2,
-            'price': price2,
-            'amount_before': amount1_after_fee,
-            'amount_after': amount2_after_fee,
-            'fee': amount2 * self.taker_fee
-        })
-        
-        # Step 3: Third conversion (back to starting currency)
+        err, s2 = _apply_step(path[1], path[2], pair2, price2, amount1_after_fee)
+        if err:
+            return err
+        steps.append(s2)
+        amount2_after_fee = s2['amount_after']
+
+        # Step 3 (back to starting currency)
         pair3 = pairs[2]
         price3 = prices[pair3]
-        
-        if pair3.startswith(path[3]):
-            amount3 = amount2_after_fee * price3
-            direction3 = 'SELL'
-        else:
-            amount3 = amount2_after_fee / price3
-            direction3 = 'BUY'
-        
-        amount3_after_fee = amount3 * (1 - self.taker_fee)
-        steps.append({
-            'pair': pair3,
-            'direction': direction3,
-            'price': price3,
-            'amount_before': amount2_after_fee,
-            'amount_after': amount3_after_fee,
-            'fee': amount3 * self.taker_fee
-        })
-        
+        err, s3 = _apply_step(path[2], path[3], pair3, price3, amount2_after_fee)
+        if err:
+            return err
+        steps.append(s3)
+        amount3_after_fee = s3['amount_after']
+
         # Apply slippage to final amount
         final_amount = amount3_after_fee * (1 - self.max_slippage)
         profit = final_amount - initial_amount

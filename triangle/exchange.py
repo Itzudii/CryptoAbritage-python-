@@ -8,6 +8,7 @@ import time
 import hmac
 import hashlib
 from typing import Dict, List, Optional
+from collections import deque
 from urllib.parse import urlencode
 from config import Config
 from logger import logger
@@ -25,6 +26,9 @@ class BinanceExchange:
         })
         self._last_request_time = 0
         self._request_count = 0
+        # Telemetry: track request and error timestamps (epoch seconds)
+        self._req_events = deque(maxlen=5000)
+        self._err_events = deque(maxlen=5000)
     
     def _rate_limit(self):
         """Implement rate limiting"""
@@ -87,21 +91,53 @@ class BinanceExchange:
                     if code in (-1003, -1015):  # Too many requests / rate-limit
                         wait = min(60, backoff * (2 ** (attempt - 1)))
                         logger.warning(f"Binance error {code}: {msg}. Backing off {wait:.1f}s")
-                        time.sleep(wait)
-                        continue
-                    if code in (-2015, -2014, -2010):  # Auth/signature/order errors
+                    now = time.time()
+                    self._req_events.append(now)
+                    self._prune_events(now, Config.API_ERROR_RATE_WINDOW_SEC)
+                    if isinstance(data, dict) and 'code' in data and data['code'] != 200:
+                        code = data.get('code')
+                        msg = data.get('msg')
                         logger.error(f"Binance error {code}: {msg}")
+                        # Count this as an error event
+                        self._err_events.append(now)
+                        self._prune_events(now, Config.API_ERROR_RATE_WINDOW_SEC)
                         return None
                 return data
             except requests.exceptions.RequestException as e:
+                now = time.time()
+                self._req_events.append(now)
+                self._err_events.append(now)
+                self._prune_events(now, Config.API_ERROR_RATE_WINDOW_SEC)
                 wait = min(10, backoff * (2 ** (attempt - 1)))
                 logger.warning(f"API request error: {e}. Retry in {wait:.1f}s (attempt {attempt}/{retries})")
                 time.sleep(wait)
             except Exception as e:
+                now = time.time()
+                self._req_events.append(now)
+                self._err_events.append(now)
+                self._prune_events(now, Config.API_ERROR_RATE_WINDOW_SEC)
                 logger.error(f"Unexpected request error: {e}")
                 return None
         logger.error("API request failed after retries")
         return None
+
+    def _prune_events(self, now_ts: float, window_sec: int):
+        cutoff = now_ts - window_sec
+        while self._req_events and self._req_events[0] < cutoff:
+            self._req_events.popleft()
+        while self._err_events and self._err_events[0] < cutoff:
+            self._err_events.popleft()
+
+    def get_error_rate(self, window_sec: Optional[int] = None) -> float:
+        """Return API error rate over a sliding window [0.0 - 1.0]."""
+        now = time.time()
+        win = window_sec or Config.API_ERROR_RATE_WINDOW_SEC
+        self._prune_events(now, win)
+        req = len(self._req_events)
+        if req == 0:
+            return 0.0
+        err = len(self._err_events)
+        return min(1.0, max(0.0, err / req))
     
     def get_ticker_price(self, symbol: str) -> Optional[float]:
         """Get current ticker price for a symbol"""
@@ -145,8 +181,11 @@ class BinanceExchange:
     
     def get_account_info(self) -> Optional[Dict]:
         """Get account information"""
+        # If keys are not provided, skip calling the signed endpoint to avoid 401 spam
+        if not self.api_key or not self.api_secret:
+            logger.debug("Skipping account info request: no API keys provided")
+            return {}
         endpoint = '/api/v3/account'
-        
         return self._make_request('GET', endpoint, signed=True)
     
     def place_market_order(self, symbol: str, side: str, quantity: float) -> Optional[Dict]:
@@ -164,15 +203,51 @@ class BinanceExchange:
         return self._make_request('POST', endpoint, signed=True, params=params)
     
     def get_symbol_info(self, symbol: str) -> Optional[Dict]:
-        """Get trading rules for a symbol"""
-        endpoint = '/api/v3/exchangeInfo'
-        params = {'symbol': symbol}
+        """Get symbol information and trading rules"""
+        return self._make_request('GET', '/api/v3/exchangeInfo', params={'symbol': symbol})
         
-        data = self._make_request('GET', endpoint, params=params)
-        if data and 'symbols' in data and len(data['symbols']) > 0:
-            return data['symbols'][0]
-        return None
-
+    def get_order_book(self, symbol: str, limit: int = 100) -> Optional[Dict]:
+        """
+        Get order book for a symbol
+        
+        Args:
+            symbol: Trading pair (e.g., 'BTCUSDT')
+            limit: Number of price levels to return (default 100, max 5000)
+            
+        Returns:
+            {
+                'lastUpdateId': int,  # Last update ID
+                'bids': [             # List of bid orders [price, quantity]
+                    ['price', 'quantity'],
+                    ...
+                ],
+                'asks': [             # List of ask orders [price, quantity]
+                    ['price', 'quantity'],
+                    ...
+                ]
+            }
+        """
+        try:
+            params = {'symbol': symbol, 'limit': min(limit, 5000)}
+            data = self._make_request('GET', '/api/v3/depth', params=params)
+            
+            if not data or 'bids' not in data or 'asks' not in data:
+                logger.error(f"Invalid order book data received: {data}")
+                return None
+                
+            # Convert string values to floats for easier calculations
+            orderbook = {
+                'lastUpdateId': data.get('lastUpdateId', 0),
+                'bids': [[float(price), float(qty)] for price, qty in data['bids']],
+                'asks': [[float(price), float(qty)] for price, qty in data['asks']],
+            }
+            
+            return orderbook
+            
+        except Exception as e:
+            logger.error(f"Error fetching order book for {symbol}: {e}")
+            return None
+        
     def get_order(self, symbol: str, order_id: int) -> Optional[Dict]:
         """Get order status/details"""
         endpoint = '/api/v3/order'

@@ -257,6 +257,37 @@ class TradeDatabase:
             'total_opportunities': total_opportunities
         }
     
+    # ---- Risk analytics helpers ----
+    def get_pnl_between(self, start_iso: str, end_iso: str) -> float:
+        """Return realized P&L between start and end timestamps (ISO8601 UTC strings)."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT COALESCE(SUM(profit), 0) FROM trades
+            WHERE executed = 1 AND timestamp BETWEEN ? AND ?
+            ''',
+            (start_iso, end_iso),
+        )
+        total = cursor.fetchone()[0] or 0.0
+        conn.close()
+        return float(total)
+
+    def get_trade_count_between(self, start_iso: str, end_iso: str) -> int:
+        """Return count of executed trades between start and end timestamps."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT COUNT(*) FROM trades
+            WHERE executed = 1 AND timestamp BETWEEN ? AND ?
+            ''',
+            (start_iso, end_iso),
+        )
+        count = int(cursor.fetchone()[0] or 0)
+        conn.close()
+        return count
+    
     def clear_old_data(self, days: int = 30):
         """Clear data older than specified days"""
         conn = self._get_connection()

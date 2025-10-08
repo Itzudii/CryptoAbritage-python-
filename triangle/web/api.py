@@ -12,6 +12,8 @@ from database import TradeDatabase
 from config import Config
 from exchange import BinanceExchange
 from calculator import ArbitrageCalculator
+from risk import RiskManager
+from market_data import market_data
 
 app = FastAPI(title="Triangular Arbitrage Bot API", version="1.0.0")
 
@@ -122,6 +124,66 @@ def get_opportunities(limit: int = 50):
     return db.get_recent_opportunities(limit=limit)
 
 
+@app.get("/api/risk")
+def get_risk():
+    """Return current risk state for UI consumption.
+    Includes: paused state, paused_until, consecutive_losses, daily_pnl, trades_today.
+    """
+    # If bot is running, use its RiskManager instance to reflect live state
+    try:
+        if bot_manager._bot is not None:
+            return bot_manager._bot.get_risk_state()
+    except Exception:
+        pass
+    # Fallback to a fresh RiskManager snapshot (uses persisted state + DB stats)
+    try:
+        rm = RiskManager(db)
+        return rm.get_state()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ---- Config Endpoints ----
+@app.get("/api/config")
+def get_config():
+    return {
+        "use_testnet": Config.USE_TESTNET,
+        "use_websocket": Config.USE_WEBSOCKET,
+        "api_url": Config.get_api_url(),
+        "ws_url": (Config.BINANCE_WS_TESTNET if Config.USE_TESTNET else Config.BINANCE_WS_MAINNET),
+    }
+
+
+@app.post("/api/config")
+def set_config(
+    use_testnet: bool | None = None,
+    use_websocket: bool | None = None,
+    _=require_dashboard_api_key(),
+):
+    changed = {}
+    # Toggle testnet
+    if use_testnet is not None and use_testnet != Config.USE_TESTNET:
+        Config.USE_TESTNET = bool(use_testnet)
+        changed["use_testnet"] = Config.USE_TESTNET
+    # Toggle websocket
+    if use_websocket is not None and use_websocket != Config.USE_WEBSOCKET:
+        Config.USE_WEBSOCKET = bool(use_websocket)
+        changed["use_websocket"] = Config.USE_WEBSOCKET
+        try:
+            if Config.USE_WEBSOCKET:
+                market_data.start()
+            else:
+                market_data.stop()
+        except Exception:
+            pass
+    # Persist changes
+    try:
+        Config.save_runtime_overrides(**changed)
+    except Exception:
+        pass
+    return {"ok": True, "changed": changed, **get_config()}
+
+
 @app.get("/api/scan")
 def on_demand_scan():
     # Run a single scan and return current opportunities without starting the bot
@@ -187,6 +249,8 @@ async def websocket_live(ws: WebSocket):
         # If bot not running, provide continuous data via periodic scans
         exchange = BinanceExchange()
         calc = ArbitrageCalculator()
+        last_scan_ts: float = 0.0
+        SCAN_INTERVAL_SEC = 10.0
         while True:
             status = bot_manager.status()
             payload: Dict[str, Any] = {"type": "status", "data": status}
@@ -198,19 +262,22 @@ async def websocket_live(ws: WebSocket):
             await ws.send_json({"type": "trades", "data": recent_trades})
             await ws.send_json({"type": "opportunities", "data": recent_opps})
 
-            # If bot is not running, do a lightweight scan to provide fresh data
+            # If bot is not running, do a lightweight scan at most every SCAN_INTERVAL_SEC to reduce UI flickering
             if not status.get("running"):
-                prices = exchange.get_all_ticker_prices() or {}
-                if prices:
-                    opps = calc.find_all_opportunities(Config.TRADING_TRIANGLES, prices, Config.INITIAL_CAPITAL)
-                    await ws.send_json({
-                        "type": "scan",
-                        "data": {
-                            "timestamp": time.time(),
-                            "count": len(opps),
-                            "opportunities": opps[:10],
-                        },
-                    })
+                now_ts = time.time()
+                if (now_ts - last_scan_ts) >= SCAN_INTERVAL_SEC:
+                    prices = exchange.get_all_ticker_prices() or {}
+                    if prices:
+                        opps = calc.find_all_opportunities(Config.TRADING_TRIANGLES, prices, Config.INITIAL_CAPITAL)
+                        await ws.send_json({
+                            "type": "scan",
+                            "data": {
+                                "timestamp": now_ts,
+                                "count": len(opps),
+                                "opportunities": opps[:10],
+                            },
+                        })
+                    last_scan_ts = now_ts
             # Throttle updates
             await ws.receive_text(timeout=0.0) if False else None  # no-op for starlette compatibility
             await asyncio_sleep(1.0)

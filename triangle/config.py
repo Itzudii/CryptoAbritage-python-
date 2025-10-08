@@ -4,6 +4,7 @@ Stores all configuration parameters and API credentials
 """
 
 import os
+import json
 from typing import Dict, List
 from pathlib import Path
 
@@ -35,7 +36,7 @@ class Config:
     BINANCE_WS_TESTNET = 'wss://testnet.binance.vision/ws'
     
     # Trading Configuration
-    USE_TESTNET = True  # Set to False for live trading
+    USE_TESTNET = False  # Use mainnet public data (still dry-run unless live trading enabled)
     INITIAL_CAPITAL = 1000  # Starting capital in USDT
     MIN_PROFIT_THRESHOLD = 0.5  # Minimum profit % to execute trade
     MAX_TRADE_SIZE = 5000  # Maximum trade size in USDT
@@ -46,7 +47,27 @@ class Config:
     
     # Risk Management
     MAX_SLIPPAGE = 0.002  # 0.2% max slippage tolerance
-    STOP_LOSS_PERCENT = 2.0  # Stop if losses exceed this %
+    STOP_LOSS_PERCENT = 2.0  # Stop if losses exceed this % (per-trade conceptual)
+    # Daily and frequency limits
+    DAILY_MAX_LOSS_PCT = 5.0  # Hard stop at -5% daily loss
+    MAX_TRADES_PER_DAY = 50   # Cap daily trades to avoid overtrading
+    MAX_CONSECUTIVE_LOSSES = 3  # Pause if this many consecutive losses occur
+    # Cooldowns (in seconds)
+    LOSS_COOLDOWN_SEC = 300  # 5 minutes after any loss
+    COOLDOWN_AFTER_2_LOSSES_SEC = 900  # 15 minutes after 2 consecutive losses
+    COOLDOWN_AFTER_3_LOSSES_SEC = 3600  # 1 hour after 3 consecutive losses
+    DAILY_STOP_RESUME_DELAY_SEC = 3600  # After daily stop, minimum 1 hour pause
+    # Execution safeguards
+    MIN_FILL_RATIO = 0.95  # Require at least 95% fill or abort
+    SINGLE_TRADE_TIMEOUT_SEC = 2.0
+    FULL_TRIANGLE_TIMEOUT_SEC = 5.0
+    # API health
+    API_ERROR_RATE_PAUSE_THRESHOLD = 0.10  # 10% error rate triggers pause
+    API_ERROR_PAUSE_SEC = 300  # 5 minutes
+    API_ERROR_RATE_WINDOW_SEC = 60  # Compute error rate over this sliding window
+    
+    # Risk state persistence
+    RISK_STATE_PATH = 'data/risk_state.json'
     
     # Performance Configuration
     UPDATE_INTERVAL = 1  # Seconds between price updates
@@ -92,6 +113,8 @@ class Config:
     # API Security / CORS
     API_ALLOWED_ORIGINS = [o.strip() for o in os.getenv('API_ALLOWED_ORIGINS', '*').split(',') if o.strip()]
     DASHBOARD_API_KEY = os.getenv('DASHBOARD_API_KEY', '')
+    # Runtime overrides persistence
+    RUNTIME_CONFIG_PATH = 'data/runtime_config.json'
     
     @classmethod
     def get_api_url(cls) -> str:
@@ -112,3 +135,47 @@ class Config:
             raise ValueError("INITIAL_CAPITAL must be positive")
         
         return True
+
+    # ---- Runtime overrides (persist settings toggled via API/UI) ----
+    @classmethod
+    def _load_runtime_overrides(cls) -> None:
+        try:
+            path = Path(cls.RUNTIME_CONFIG_PATH)
+            if path.exists():
+                data = json.loads(path.read_text())
+                if isinstance(data, dict):
+                    if 'use_testnet' in data:
+                        cls.USE_TESTNET = bool(data['use_testnet'])
+                    if 'use_websocket' in data:
+                        cls.USE_WEBSOCKET = bool(data['use_websocket'])
+        except Exception:
+            # Ignore and use defaults
+            pass
+
+    @classmethod
+    def save_runtime_overrides(cls, **kwargs) -> bool:
+        """Persist selected config flags to disk (e.g., use_testnet, use_websocket)."""
+        try:
+            # Load existing
+            data = {}
+            path = Path(cls.RUNTIME_CONFIG_PATH)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists():
+                try:
+                    data = json.loads(path.read_text()) or {}
+                except Exception:
+                    data = {}
+            # Apply and write
+            for k, v in kwargs.items():
+                if k in ('use_testnet', 'use_websocket'):
+                    data[k] = bool(v)
+            path.write_text(json.dumps(data))
+            return True
+        except Exception:
+            return False
+
+# Load persisted overrides at import time
+try:
+    Config._load_runtime_overrides()
+except Exception:
+    pass

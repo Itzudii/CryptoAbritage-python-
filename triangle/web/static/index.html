@@ -21,17 +21,23 @@
     .ok { background: #123f28; color: #8fe1b7; }
     .warn { background: #3f2b12; color: #f0c27b; }
     .bad { background: #3f1212; color: #f08a8a; }
+    /* Profit/Loss coloring */
+    .pos { color: #8fe1b7; }
+    .neg { color: #f08a8a; }
     footer { padding: 12px 20px; text-align: center; color: #91a2c7; border-top: 1px solid #243049; }
     small.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; color: #9fb0d9; }
   </style>
 </head>
 <body>
   <header>
-    <h1>🔺 Triangular Arbitrage Bot</h1>
+    <h1> Triangular Arbitrage Bot</h1>
     <div class="row">
+      <div id="dataSource" class="pill warn" style="margin-right:8px;">Loading config...</div>
       <button id="startBtn">Start (Dry Run)</button>
       <button id="stopBtn" class="secondary">Stop</button>
       <button id="scanBtn" class="secondary">On-demand Scan</button>
+      <button id="toggleNetBtn" class="secondary" title="Toggle Testnet/Mainnet">Toggle Net</button>
+      <button id="toggleWsBtn" class="secondary" title="Toggle WebSocket/REST">Toggle WS</button>
     </div>
   </header>
 
@@ -44,6 +50,15 @@
         <div>Iterations: <span id="iterations">0</span></div>
         <div>Opportunities Found: <span id="oppsFound">0</span></div>
         <div>Trades Executed: <span id="tradesExec">0</span></div>
+      </div>
+    </section>
+
+    <!-- PnL Card -->
+    <section class="card">
+      <h3>PNL</h3>
+      <div class="row">
+        <div>Today's PnL (USDT): <strong id="dailyPNL" class="">0.00</strong></div>
+        <div style="margin-left:12px;">Total Profit (USDT): <strong id="totalProfit2">0.00</strong></div>
       </div>
     </section>
 

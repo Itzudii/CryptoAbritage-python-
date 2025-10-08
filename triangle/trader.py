@@ -4,10 +4,14 @@ Handles actual trade execution and order management
 """
 
 import time
-from typing import Dict, List, Optional
+from exchange import BinanceExchange
 from config import Config
 from logger import logger
-from exchange import BinanceExchange
+import time
+from typing import Dict, List, Optional, Any, Tuple
+from decimal import Decimal, getcontext
+from liquidity import LiquidityChecker, LiquidityCheckResult
+from notifications import send_risk_alert, AlertLevel
 
 class TradeExecutor:
     """Execute arbitrage trades"""
@@ -17,7 +21,53 @@ class TradeExecutor:
         self.total_profit = 0
         self.total_trades = 0
         self.failed_trades = 0
+        self.liquidity_checker = LiquidityChecker(exchange)
+        self._last_liquidity_check = {}
+        self._liquidity_cache_ttl = 5.0  # Cache liquidity checks for 5 seconds
     
+    def _check_liquidity(self, opportunity: Dict) -> Tuple[bool, Optional[str], List[LiquidityCheckResult]]:
+        """Check if there's sufficient liquidity for the entire triangle."""
+        triangle_key = '->'.join(opportunity['triangle']['path'])
+        current_time = time.time()
+        
+        # Check cache first
+        if triangle_key in self._last_liquidity_check:
+            last_check_time, last_result = self._last_liquidity_check[triangle_key]
+            if current_time - last_check_time < self._liquidity_cache_ttl:
+                return last_result
+        
+        # Perform liquidity check
+        is_viable, results = self.liquidity_checker.validate_triangle_liquidity(
+            opportunity, 
+            opportunity.get('initial_amount', 0)
+        )
+        
+        # Cache the result
+        self._last_liquidity_check[triangle_key] = (current_time, (is_viable, None if is_viable else "Insufficient liquidity", results))
+        
+        if not is_viable:
+            # Log the specific reasons for rejection
+            for i, result in enumerate(results):
+                if not result.is_sufficient:
+                    logger.warning(f"Liquidity check failed on step {i+1}: {result.message}")
+                    
+                    # Send alert for critical liquidity issues
+                    if result.estimated_slippage > Config.MAX_SLIPPAGE * 100:  # Convert to percentage
+                        send_risk_alert(
+                            "High Slippage Detected",
+                            {
+                                "symbol": opportunity['steps'][i]['pair'],
+                                "estimated_slippage": f"{result.estimated_slippage:.4f}%",
+                                "max_allowed": f"{Config.MAX_SLIPPAGE * 100:.2f}%",
+                                "required_volume": f"{result.required_volume:.2f} USDT",
+                                "available_volume": f"{result.available_volume:.2f} USDT"
+                            },
+                            AlertLevel.WARNING,
+                            {"triangle": opportunity['triangle'].get('path', [])}
+                        )
+        
+        return is_viable, None if is_viable else "Insufficient liquidity", results
+
     def execute_triangle(self, opportunity: Dict) -> Dict:
         """
         Execute a triangular arbitrage opportunity
@@ -29,17 +79,42 @@ class TradeExecutor:
         
         logger.info(f"🚀 Executing triangle: {' -> '.join(triangle['path'])}")
         
+        # Check liquidity before proceeding
+        is_viable, reason, liquidity_results = self._check_liquidity(opportunity)
+        if not is_viable:
+            return {
+                'success': False,
+                'triangle': triangle,
+                'steps_executed': [],
+                'total_profit': 0,
+                'error': reason,
+                'liquidity_checks': [r.to_dict() for r in liquidity_results] if liquidity_results else []
+            }
+        
+        start_ts = time.time()
         execution_results = {
             'success': False,
             'triangle': triangle,
             'steps_executed': [],
             'total_profit': 0,
-            'error': None
+            'error': None,
+            'liquidity_checks': [r.to_dict() for r in liquidity_results] if liquidity_results else [],
+            'execution_time': 0.0,
         }
         
         try:
-            # Execute each step in sequence
+            # Execute each step in sequence with timeouts
             for i, step in enumerate(steps):
+                # Enforce full-triangle timeout budget
+                if (time.time() - start_ts) > Config.FULL_TRIANGLE_TIMEOUT_SEC:
+                    execution_results['error'] = f"Full triangle timeout > {Config.FULL_TRIANGLE_TIMEOUT_SEC}s"
+                    logger.error(execution_results['error'])
+                    # Attempt to reverse any executed trades
+                    if execution_results['steps_executed']:
+                        logger.warning("Attempting to reverse previous trades due to timeout...")
+                        self._reverse_trades(execution_results['steps_executed'])
+                    return execution_results
+
                 step_result = self._execute_step(step)
                 
                 if not step_result['success']:
@@ -51,6 +126,19 @@ class TradeExecutor:
                         logger.warning("Attempting to reverse previous trades...")
                         self._reverse_trades(execution_results['steps_executed'])
                     
+                    return execution_results
+
+                # Enforce minimum fill ratio
+                req_qty = float(step_result.get('requested_qty', 0) or 0)
+                exec_qty = float(step_result.get('executed_qty', 0) or 0)
+                fill_ratio = (exec_qty / req_qty) if req_qty > 0 else 1.0
+                if fill_ratio < Config.MIN_FILL_RATIO:
+                    execution_results['error'] = (
+                        f"Fill ratio {fill_ratio:.3f} < min {Config.MIN_FILL_RATIO:.3f} on {step_result.get('pair')}"
+                    )
+                    logger.error(execution_results['error'])
+                    # Reverse prior trades (including this partial one best-effort)
+                    self._reverse_trades(execution_results['steps_executed'] + [step_result])
                     return execution_results
                 
                 execution_results['steps_executed'].append(step_result)
@@ -65,6 +153,7 @@ class TradeExecutor:
                 triangle,
                 opportunity.get('initial_amount', 0.0)
             )
+            execution_results['execution_time'] = time.time() - start_ts
             
             self.total_profit += execution_results['total_profit']
             self.total_trades += 1
@@ -80,7 +169,7 @@ class TradeExecutor:
     
     def _execute_step(self, step: Dict) -> Dict:
         """
-        Execute a single trading step
+        Execute a single trading step with enhanced error handling and monitoring
         """
         pair = step['pair']
         direction = step['direction']  # 'BUY' or 'SELL'
@@ -93,14 +182,26 @@ class TradeExecutor:
             'order_id': None,
             'executed_qty': 0,
             'executed_price': 0,
-            'error': None
+            'requested_qty': 0,
+            'error': None,
+            'timestamp': time.time(),
+            'latency_ms': 0
         }
         
+        start_time = time.time()
+        
         try:
+            # Enforce single trade timeout
+            if time.time() - start_time > Config.SINGLE_TRADE_TIMEOUT_SEC:
+                result['error'] = f"Single trade timeout after {Config.SINGLE_TRADE_TIMEOUT_SEC}s"
+                logger.error(f"{pair} {direction} {amount} - {result['error']}")
+                return result
+                
             # Get symbol info for precision
             symbol_info = self.exchange.get_symbol_info(pair)
             if not symbol_info:
                 result['error'] = f"Could not get symbol info for {pair}"
+                logger.error(result['error'])
                 return result
             
             # Format quantity according to symbol precision and notional
@@ -108,21 +209,58 @@ class TradeExecutor:
             if quantity <= 0:
                 result['error'] = "Quantity below exchange limits"
                 return result
+            result['requested_qty'] = float(quantity)
             
-            # Place market order
-            order = self.exchange.place_market_order(pair, direction, quantity)
+            # Record requested quantity for fill ratio calculation
+            result['requested_qty'] = float(quantity)
             
-            if order and 'orderId' in order:
-                result['success'] = True
-                result['order_id'] = order['orderId']
-                result['executed_qty'] = float(order.get('executedQty', quantity))
-                result['executed_price'] = float(order.get('price', step['price']))
-            else:
-                result['error'] = "Order placement failed"
+            # Place market order with timeout
+            order_start = time.time()
+            try:
+                order = self.exchange.place_market_order(pair, direction, quantity)
+                result['latency_ms'] = (time.time() - order_start) * 1000
+                if not order:
+                    result['error'] = "Order placement returned no data"
+                    return result
+                # Populate result fields from exchange response
+                result['order_id'] = order.get('orderId')
+                executed_qty = float(order.get('executedQty', 0) or 0)
+                result['executed_qty'] = executed_qty
+                # Determine executed price
+                cum_quote = float(order.get('cummulativeQuoteQty', 0) or 0)
+                if executed_qty > 0 and cum_quote > 0:
+                    result['executed_price'] = cum_quote / executed_qty
+                else:
+                    fills = order.get('fills', [])
+                    if fills:
+                        total_cost = sum(float(f.get('price', 0)) * float(f.get('qty', 0)) for f in fills)
+                        total_qty = sum(float(f.get('qty', 0)) for f in fills)
+                        if total_qty > 0:
+                            result['executed_price'] = total_cost / total_qty
+                # Mark success if we executed any quantity
+                result['success'] = executed_qty > 0
+            except Exception as oe:
+                result['error'] = str(oe)
+                result['latency_ms'] = (time.time() - order_start) * 1000
+                logger.error(f"Order placement failed for {pair} {direction} {quantity}: {oe}")
+                return result
                 
         except Exception as e:
             result['error'] = str(e)
-            logger.error(f"Step execution error: {e}")
+            result['latency_ms'] = (time.time() - start_time) * 1000
+            logger.error(f"{pair} {direction} {amount} - Step execution error: {e}")
+            
+            # Send alert for execution error
+            send_risk_alert(
+                "Trade Execution Error",
+                {
+                    "symbol": pair,
+                    "side": direction,
+                    "amount": amount,
+                    "error": str(e)
+                },
+                AlertLevel.CRITICAL
+            )
         
         return result
     
