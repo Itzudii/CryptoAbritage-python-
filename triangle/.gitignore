@@ -1,13 +1,6 @@
-__pycache__
-.vscode
-myvenv
-trash
-test.ipynb
-tempCodeRunnerFile.py
 # Environment variables
 .env
 .env.example
-/triangle/.env.example
 # Python
 __pycache__/
 *.py[cod]
@@ -34,11 +27,10 @@ wheels/
 venv/
 ENV/
 env/
-myvenv/
 
 # IDE
-.idea/
 .vscode/
+.idea/
 *.swp
 *.swo
 *~
