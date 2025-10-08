@@ -225,8 +225,8 @@ class DecisionEngine:
         platform  = obj.platform
         node = self.c_get_node(platform)
         node.setAll(obj.ask_p,obj.ask_q,obj.bid_p,obj.bid_q,obj.nano)   
-        print(self.metaInfo)
-        print(self.tickerInfo)
+        # print(self.metaInfo)
+        # print(self.tickerInfo)
         # raise Exception('stop')
         if all([self.status.get('binance',False),self.status.get('bybit',False)]):
             binanceMeta = self.metaInfo.get('binance')
@@ -235,15 +235,17 @@ class DecisionEngine:
             bybitNode = self.tickerInfo.get('bybit')
             if all([binanceMeta,bybitMeta,binanceNode,bybitNode]):
                 node1 = Node('test1-binanace')
+                # node1.setAll(binanceNode.ask_p,binanceNode.ask_q,bybitNode.bid_p,bybitNode.bid_q,binanceNode.nano)
+                print(binanceNode.ask_p,binanceNode.ask_q,bybitNode.bid_p,bybitNode.bid_q,binanceNode.nano)
                 node1.setAll(binanceNode.ask_p,binanceNode.ask_q,bybitNode.bid_p,bybitNode.bid_q,binanceNode.nano)
 
-                node2 = Node('test2-bybit')
-                node2.setAll(bybitNode.ask_p,bybitNode.ask_q,binanceNode.bid_p,binanceNode.bid_q,bybitNode.nano)
+                # node2 = Node('test2-bybit')
+                # node2.setAll(bybitNode.ask_p,bybitNode.ask_q,binanceNode.bid_p,binanceNode.bid_q,bybitNode.nano)
 
                 decision1 = decide_cross_arb('btcusdt',binanceMeta,bybitMeta,node1)
-                decision2 = decide_cross_arb('btcusdt',bybitMeta,binanceMeta,node2)
+                # decision2 = decide_cross_arb('btcusdt',bybitMeta,binanceMeta,node2)
                 print(decision1)
-                print(decision2)
+                # print(decision2)
                 # if decision1.should_trade:
                 #     print(f"Decision: {decision1.side} qty:{decision1.qty} expected_net_usd:{decision1.expected_net_usd} constraints:{decision1.constraints}")
                 # if decision2.should_trade:

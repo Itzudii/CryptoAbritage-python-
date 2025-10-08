@@ -83,6 +83,6 @@ class BYBITExchangeInfo:
             print(f'ExchangeInfoBinance:sendRequest:Error: {e}')
 
 
-if __name__ == '__main__':
-    b = ExchangeInfoBinance()
-    b.send_request()
+# if __name__ == '__main__':
+#     b = ExchangeInfoBinance()
+#     b.send_request()
